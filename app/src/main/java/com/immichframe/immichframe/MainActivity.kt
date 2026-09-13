@@ -82,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private var previousImage: Helpers.ImageResponse? = null
     private var currentImage: Helpers.ImageResponse? = null
     private var portraitCache: Helpers.ImageResponse? = null
+    private lateinit var displayManager: HardwareDisplayManager
     private val imageRunnable = object : Runnable {
         override fun run() {
             if (isImageTimerRunning) {
@@ -125,7 +126,6 @@ class MainActivity : AppCompatActivity() {
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        //force dark mode
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         super.onCreate(savedInstanceState)
 
@@ -133,7 +133,6 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.main_view)
         hideSystemUI()
 
-        // Clean up settings of the removed Screen Dimming feature (replaced by Active Times)
         PreferenceManager.getDefaultSharedPreferences(applicationContext).edit()
             .remove("screenDim")
             .remove("dim_time_range")
@@ -155,6 +154,15 @@ class MainActivity : AppCompatActivity() {
         btnNext = findViewById(R.id.btnNext)
         dimOverlay = findViewById(R.id.dimOverlay)
         swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout)
+
+        displayManager = HardwareDisplayManager(
+            context = this,
+            motionPath = "/dev/motion0",
+            timeoutMillis = 5 * 60 * 1000L,
+            onSleepRequest = { turnScreenOffForMotion() },
+            onWakeRequest = { turnScreenOnForMotion() },
+            canWake = { isFrameInactive != true }
+        )
 
         val swipeRefreshLayout = findViewById<SwipeRefreshLayout>(R.id.swipeRefreshLayout)
         swipeRefreshLayout.setOnRefreshListener {
@@ -212,9 +220,56 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun turnScreenOffForMotion() {
+        dimOverlay.apply {
+            visibility = View.VISIBLE
+            alpha = 1.0f
+        }
+        val lp = window.attributes
+        lp.screenBrightness = 0f
+        window.attributes = lp
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        lockDeviceIfPossible()
+    }
+
+    private fun turnScreenOnForMotion() {
+        wakeScreen()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            keyguardManager.requestDismissKeyguard(this, null)
+        }
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    or WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
+        val lp = window.attributes
+        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = lp
+
+        if (dimOverlay.isVisible) {
+            dimOverlay.animate()
+                .alpha(0f)
+                .setDuration(300L)
+                .withEndAction {
+                    dimOverlay.visibility = View.GONE
+                }
+                .start()
+        }
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        if (::displayManager.isInitialized) {
+            displayManager.resetSleepTimer()
+        }
+    }
+
     private fun showImage(imageResponse: Helpers.ImageResponse) {
         CoroutineScope(Dispatchers.IO).launch {
-            //get the window size
             val decorView = window.decorView
             val width = decorView.width
             val height = decorView.height
@@ -297,7 +352,6 @@ class MainActivity : AppCompatActivity() {
             }
             .start()
 
-        // Toggle active ImageView
         isShowingFirst = !isShowingFirst
 
         if (isMerged) {
@@ -534,6 +588,15 @@ class MainActivity : AppCompatActivity() {
         val settingsLock = prefs.getBoolean("settingsLock", false)
         val activeTimes = prefs.getBoolean("activeTimes", false)
 
+        // Bewegungssensor-Einstellungen laden
+        val motionSensorEnabled = prefs.getBoolean("motion_sensor_enabled", true)
+        val timeoutMinutes = prefs.getString("motion_sensor_timeout", "5")?.toLongOrNull() ?: 5L
+        val timeoutMillis = timeoutMinutes * 60 * 1000L
+
+        if (::displayManager.isInitialized) {
+            displayManager.updateConfig(motionSensorEnabled, timeoutMillis)
+        }
+
         webView.visibility = if (useWebView) View.VISIBLE else View.GONE
         imageView1.visibility = if (useWebView) View.GONE else View.VISIBLE
         imageView2.visibility = if (useWebView) View.GONE else View.VISIBLE
@@ -541,8 +604,8 @@ class MainActivity : AppCompatActivity() {
         btnPause.visibility = if (useWebView) View.GONE else View.VISIBLE
         btnNext.visibility = if (useWebView) View.GONE else View.VISIBLE
         swipeRefreshLayout.isEnabled = !settingsLock
-        txtPhotoInfo.visibility = View.GONE //enabled in onSettingsLoaded based on server settings
-        txtDateTime.visibility = View.GONE //enabled in onSettingsLoaded based on server settings
+        txtPhotoInfo.visibility = View.GONE
+        txtDateTime.visibility = View.GONE
 
         if (activeTimes) {
             handler.removeCallbacks(activeCheckRunnable)
@@ -573,7 +636,6 @@ class MainActivity : AppCompatActivity() {
                 ): Boolean {
                     val url = request?.url
                     if (url != null) {
-                        // Open the URL in the default browser
                         val intent = Intent(Intent.ACTION_VIEW, url)
                         startActivity(intent)
                         return true
@@ -598,7 +660,6 @@ class MainActivity : AppCompatActivity() {
                         }, 500)
                     }
                     Handler(Looper.getMainLooper()).postDelayed({
-                        //check url again in case the user has changed it
                         var currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
                         currentUrl = if (authSecret.isNotEmpty()) {
                             savedUrl.toUri()
@@ -684,7 +745,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun previousAction() {
         if (useWebView) {
-            // Simulate a key press
             webView.requestFocus()
             val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
             dispatchKeyEvent(event)
@@ -842,6 +902,11 @@ class MainActivity : AppCompatActivity() {
             val lp = window.attributes
             lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
             window.attributes = lp
+
+            if (::displayManager.isInitialized) {
+                displayManager.wakeDisplay()
+            }
+
             if (dimOverlay.isVisible) {
                 dimOverlay.animate()
                     .alpha(0f)
@@ -869,7 +934,11 @@ class MainActivity : AppCompatActivity() {
             val lp = window.attributes
             lp.screenBrightness = 0f
             window.attributes = lp
-            // Stop forcing the screen to stay on and allow it to power off
+
+            if (::displayManager.isInitialized) {
+                displayManager.sleepDisplay()
+            }
+
             window.clearFlags(
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                         or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
@@ -878,9 +947,7 @@ class MainActivity : AppCompatActivity() {
                 setShowWhenLocked(false)
                 setTurnScreenOn(false)
             }
-            // Wake the device back up at the next scheduled active time
             scheduleWakeAlarm()
-            // Actively turn the screen off and sleep the device (requires device admin)
             lockDeviceIfPossible()
         }
     }
@@ -1020,10 +1087,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         hideSystemUI()
-        // Re-evaluate the schedule whenever the activity returns to the foreground. This is
-        // essential when the wake alarm brings an already-running instance forward (which does
-        // not re-run onCreate), so the screen powers on immediately instead of waiting for the
-        // next periodic check.
+
+        if (::displayManager.isInitialized) {
+            displayManager.start()
+        }
+
         if (isManualOverride) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         if (prefs.getBoolean("activeTimes", false)) {
@@ -1036,8 +1104,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Nur beenden, wenn die Activity zerstört wird (nicht beim Standby)
+        if (isFinishing && ::displayManager.isInitialized) {
+            displayManager.stop()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        if (::displayManager.isInitialized) {
+            displayManager.stop()
+        }
         rcpServer.stop()
         unregisterReceiver(screenStateReceiver)
         handler.removeCallbacksAndMessages(null)
