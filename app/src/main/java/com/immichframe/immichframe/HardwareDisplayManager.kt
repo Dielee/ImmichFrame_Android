@@ -20,7 +20,9 @@ class HardwareDisplayManager(
     private var managerScope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var listeningJob: Job? = null
     private var sleepJob: Job? = null
-    private var isDisplaySleeping = false
+
+    var isDisplaySleeping: Boolean = false
+        private set
 
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     private val cpuWakeLock = powerManager.newWakeLock(
@@ -36,26 +38,44 @@ class HardwareDisplayManager(
             return
         }
 
-        listeningJob = managerScope.launch {
-            val motionFile = File(motionPath)
-            val buffer = ByteArray(1)
+        val motionFile = File(motionPath)
+        if (!motionFile.exists()) {
+            Log.w(tag, "Motion sensor $motionPath not found; keeping display awake")
+            return
+        }
 
-            resetSleepTimer()
+        // Test-Read zur Bestätigung, dass das Device-Node ohne Fehler geöffnet werden kann
+        val isSensorUsable = try {
+            FileInputStream(motionFile).use { stream ->
+                stream.read(ByteArray(1)) >= 0
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Motion sensor $motionPath unreadable: ${e.message}; keeping display awake")
+            false
+        }
+
+        if (!isSensorUsable) {
+            return
+        }
+
+        // Timer erst nach bestätigter Sensor-Verfügbarkeit starten
+        resetSleepTimer()
+
+        listeningJob = managerScope.launch {
+            val buffer = ByteArray(1)
 
             while (isActive) {
                 try {
-                    if (motionFile.exists()) {
-                        FileInputStream(motionFile).use { stream ->
-                            if (stream.read(buffer) == 1 && buffer[0].toInt() == 1) {
-                                if (canWake()) {
-                                    if (isDisplaySleeping) {
-                                        Log.d(tag, "Motion detected -> waking display")
-                                        withContext(Dispatchers.Main) {
-                                            wakeDisplay()
-                                        }
+                    FileInputStream(motionFile).use { stream ->
+                        if (stream.read(buffer) == 1 && buffer[0].toInt() == 1) {
+                            if (canWake()) {
+                                if (isDisplaySleeping) {
+                                    Log.d(tag, "Motion detected -> waking display")
+                                    withContext(Dispatchers.Main) {
+                                        wakeDisplay()
                                     }
-                                    resetSleepTimer()
                                 }
+                                resetSleepTimer()
                             }
                         }
                     }

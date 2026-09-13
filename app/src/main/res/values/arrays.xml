@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="motion_timeout_entries">
-        <item>1 Minutes</item>
+        <item>1 Minute</item>
         <item>2 Minutes</item>
         <item>5 Minutes</item>
         <item>10 Minutes</item>

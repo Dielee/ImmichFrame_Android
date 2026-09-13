@@ -903,8 +903,10 @@ class MainActivity : AppCompatActivity() {
             lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
             window.attributes = lp
 
+            // Display aufwecken und Bewegungserkennung wieder starten
             if (::displayManager.isInitialized) {
                 displayManager.wakeDisplay()
+                displayManager.start()
             }
 
             if (dimOverlay.isVisible) {
@@ -921,7 +923,6 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             isFrameInactive = true
-            // Stop refreshing content while inactive
             stopImageTimer()
             stopWeatherTimer()
             if (useWebView) {
@@ -935,8 +936,10 @@ class MainActivity : AppCompatActivity() {
             lp.screenBrightness = 0f
             window.attributes = lp
 
+            // Display schlafen legen und Polling/WakeLock während inaktiver Zeiten stoppen
             if (::displayManager.isInitialized) {
                 displayManager.sleepDisplay()
+                displayManager.stop()
             }
 
             window.clearFlags(
@@ -951,7 +954,6 @@ class MainActivity : AppCompatActivity() {
             lockDeviceIfPossible()
         }
     }
-
     private fun onScreenTurnedOn() {
         // Manual power-button override: when the schedule has put the frame to sleep and the
         // user turns the screen on, temporarily show the frame without forcing it to stay on.
@@ -1088,7 +1090,8 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         hideSystemUI()
 
-        if (::displayManager.isInitialized) {
+        // Bewegungserkennung nur starten, wenn die Frame-Zeit aktiv ist
+        if (::displayManager.isInitialized && isFrameInactive != true) {
             displayManager.start()
         }
 
@@ -1106,8 +1109,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Nur beenden, wenn die Activity zerstört wird (nicht beim Standby)
-        if (isFinishing && ::displayManager.isInitialized) {
+        // Stoppt den Manager nur, wenn die Activity pausiert während das Display noch AN ist
+        // (z. B. wenn SettingsActivity geöffnet ist), damit Settings nicht unerwartet schlafen gehen.
+        // Beim echten Display-Standby (isDisplaySleeping == true) läuft das Polling weiter.
+        if (::displayManager.isInitialized && !displayManager.isDisplaySleeping) {
             displayManager.stop()
         }
     }
