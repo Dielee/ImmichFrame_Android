@@ -90,10 +90,14 @@ class HardwareDisplayManager(
         }
     }
 
-    fun updateConfig(enabled: Boolean, newTimeoutMillis: Long) {
+    fun updateConfig(enabled: Boolean, newTimeoutMillis: Long, applyLifecycle: Boolean = true) {
         this.isEnabled = enabled
         this.timeoutMillis = newTimeoutMillis
-        Log.d(tag, "Config updated: enabled=$enabled, timeout=${newTimeoutMillis / 1000}s")
+        Log.d(tag, "Config updated: enabled=$enabled, timeout=${newTimeoutMillis / 1000}s, applyLifecycle=$applyLifecycle")
+
+        if (!applyLifecycle) {
+            return
+        }
 
         if (!enabled) {
             stopListening()

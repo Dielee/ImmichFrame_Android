@@ -269,7 +269,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onUserInteraction() {
         super.onUserInteraction()
-        if (::displayManager.isInitialized) {
+        // Timer nur zurücksetzen, wenn der Rahmen nicht inaktiv geschaltet ist
+        if (::displayManager.isInitialized && isFrameInactive != true) {
             displayManager.resetSleepTimer()
         }
     }
@@ -600,7 +601,9 @@ class MainActivity : AppCompatActivity() {
         val timeoutMillis = timeoutMinutes * 60 * 1000L
 
         if (::displayManager.isInitialized) {
-            displayManager.updateConfig(motionSensorEnabled, timeoutMillis)
+            // Nur starten/aufwecken, wenn der Rahmen aktuell aktiv ist
+            val shouldActivateLifecycle = (isFrameInactive != true)
+            displayManager.updateConfig(motionSensorEnabled, timeoutMillis, shouldActivateLifecycle)
         }
 
         webView.visibility = if (useWebView) View.VISIBLE else View.GONE
