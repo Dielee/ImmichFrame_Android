@@ -220,16 +220,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun turnScreenOffForMotion() {
-        dimOverlay.apply {
-            visibility = View.VISIBLE
-            alpha = 1.0f
+    private fun turnScreenOffForMotion(): Boolean {
+        return try {
+            dimOverlay.apply {
+                visibility = View.VISIBLE
+                alpha = 1.0f
+            }
+            val lp = window.attributes
+            lp.screenBrightness = 0f
+            window.attributes = lp
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            lockDeviceIfPossible()
+            true
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Failed to turn screen off: ${e.message}")
+            false
         }
-        val lp = window.attributes
-        lp.screenBrightness = 0f
-        window.attributes = lp
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        lockDeviceIfPossible()
     }
 
     private fun turnScreenOnForMotion() {

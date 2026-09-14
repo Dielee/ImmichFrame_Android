@@ -12,7 +12,7 @@ class HardwareDisplayManager(
     private val motionPath: String = "/dev/motion0",
     private var timeoutMillis: Long = 5 * 60 * 1000L,
     private var isEnabled: Boolean = true,
-    private val onSleepRequest: () -> Unit,
+    private val onSleepRequest: () -> Boolean,
     private val onWakeRequest: () -> Unit,
     private val canWake: () -> Boolean = { true }
 ) {
@@ -38,44 +38,47 @@ class HardwareDisplayManager(
             return
         }
 
-        val motionFile = File(motionPath)
-        if (!motionFile.exists()) {
-            Log.w(tag, "Motion sensor $motionPath not found; keeping display awake")
-            return
-        }
-
-        // Test-Read zur Bestätigung, dass das Device-Node ohne Fehler geöffnet werden kann
-        val isSensorUsable = try {
-            FileInputStream(motionFile).use { stream ->
-                stream.read(ByteArray(1)) >= 0
-            }
-        } catch (e: Exception) {
-            Log.w(tag, "Motion sensor $motionPath unreadable: ${e.message}; keeping display awake")
-            false
-        }
-
-        if (!isSensorUsable) {
-            return
-        }
-
-        // Timer erst nach bestätigter Sensor-Verfügbarkeit starten
-        resetSleepTimer()
-
-        listeningJob = managerScope.launch {
+        listeningJob = managerScope.launch(Dispatchers.IO) {
+            val motionFile = File(motionPath)
             val buffer = ByteArray(1)
+            var hasConfirmedSensor = false
+
+            // Sensor-Probe asynchron innerhalb des CoroutineScopes
+            try {
+                if (motionFile.exists() && motionFile.canRead()) {
+                    FileInputStream(motionFile).use { stream ->
+                        val bytesRead = stream.read(buffer)
+                        if (bytesRead >= 0) {
+                            hasConfirmedSensor = true
+                            Log.d(tag, "Motion sensor $motionPath confirmed usable; arming sleep timer")
+                            resetSleepTimer()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "Motion sensor probe failed for $motionPath: ${e.message}")
+            }
+
+            // Wenn der Sensor nicht lesbar ist: Display wach halten, Timer nicht scharfschalten
+            if (!hasConfirmedSensor) {
+                Log.w(tag, "Motion sensor $motionPath unavailable or unreadable; keeping display awake")
+                return@launch
+            }
 
             while (isActive) {
                 try {
-                    FileInputStream(motionFile).use { stream ->
-                        if (stream.read(buffer) == 1 && buffer[0].toInt() == 1) {
-                            if (canWake()) {
-                                if (isDisplaySleeping) {
-                                    Log.d(tag, "Motion detected -> waking display")
-                                    withContext(Dispatchers.Main) {
-                                        wakeDisplay()
+                    if (motionFile.exists()) {
+                        FileInputStream(motionFile).use { stream ->
+                            if (stream.read(buffer) == 1 && buffer[0].toInt() == 1) {
+                                if (canWake()) {
+                                    if (isDisplaySleeping) {
+                                        Log.d(tag, "Motion detected -> waking display")
+                                        withContext(Dispatchers.Main) {
+                                            wakeDisplay()
+                                        }
                                     }
+                                    resetSleepTimer()
                                 }
-                                resetSleepTimer()
                             }
                         }
                     }
@@ -115,20 +118,42 @@ class HardwareDisplayManager(
         }
     }
 
-    fun sleepDisplay() {
-        if (isDisplaySleeping) return
-        isDisplaySleeping = true
-        sleepJob?.cancel()
+    fun sleepDisplay(): Boolean {
+        if (isDisplaySleeping) return true
 
+        var lockAcquired = false
         try {
             if (!cpuWakeLock.isHeld) {
                 cpuWakeLock.acquire()
+                lockAcquired = true
             }
         } catch (e: Exception) {
             Log.w(tag, "Failed to acquire CPU wake lock: ${e.message}")
         }
 
-        onSleepRequest()
+        // Erfolg der Schlaf-Anforderung zuerst prüfen
+        val success = try {
+            onSleepRequest()
+        } catch (e: Exception) {
+            Log.w(tag, "onSleepRequest threw exception: ${e.message}")
+            false
+        }
+
+        if (success) {
+            isDisplaySleeping = true
+            sleepJob?.cancel()
+        } else {
+            // Bei Fehlschlag WakeLock nicht halten und Schlafzustand nicht setzen
+            if (lockAcquired && cpuWakeLock.isHeld) {
+                try {
+                    cpuWakeLock.release()
+                } catch (e: Exception) {
+                    Log.w(tag, "Failed to release CPU wake lock on sleep failure: ${e.message}")
+                }
+            }
+        }
+
+        return success
     }
 
     fun wakeDisplay() {
